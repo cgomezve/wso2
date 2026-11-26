@@ -30,7 +30,7 @@ Implementar una arquitectura de alta disponibilidad (HA) activo-activo para **WS
                             HTTPS (443) / HTTP (80)
                                        v
                      +-----------------------------------+
-                     |   Nginx Reverse Proxy / VIP PRD   |
+                     |              F5                   |
                      |       (api.tu-dominio.com)        |
                      +-----------------------------------+
                             /                     \
