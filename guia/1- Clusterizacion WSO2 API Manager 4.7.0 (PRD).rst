@@ -6,6 +6,8 @@ Plan de Trabajo y Guia de Implementacion: Cluster WSO2 API Manager 4.7.0 en Rock
 :Sistema Operativo: Rocky Linux 9.x
 :Producto: WSO2 API Manager 4.7.0 (Despliegue All-in-One Activo-Activo)
 :Java Runtime: JDK 21 (o JDK 25 segun estandar aprobado)
+:Balanceador: F5 (gestionado por equipo de redes/balanceo)
+:Granja de BD: MariaDB (IP ``10.132.0.56``)
 :Nodos:
    - ``lrkprdappdckposapi01`` (``10.133.4.187``)
    - ``lrkprdappdckposapi02`` (``10.133.4.188``)
@@ -21,7 +23,7 @@ Parte 1: Plan de Trabajo Detallado (Ventana de Implementacion)
 1.1 Objetivo y Arquitectura de Referencia
 -----------------------------------------
 
-Implementar una arquitectura de alta disponibilidad (HA) activo-activo para **WSO2 API Manager 4.7.0** sobre **Rocky Linux 9**, utilizando **JDK 21**, bases de datos relacionales compartidas (``WSO2AM_DB`` y ``WSO2SHARED_DB``), clave de cifrado interna compartida (``[encryption]``), sincronizacion de artefactos y reverse proxy Nginx con terminacion TLS.
+Implementar una arquitectura de alta disponibilidad (HA) activo-activo para **WSO2 API Manager 4.7.0** sobre **Rocky Linux 9**, utilizando **JDK 21**, bases de datos relacionales compartidas (``WSO2AM_DB`` y ``WSO2SHARED_DB``) en la granja de MariaDB (``10.132.0.56``), clave de cifrado interna compartida (``[encryption]``), sincronizacion de artefactos y balanceo de carga mediante F5.
 
 .. code-block:: text
 
@@ -30,7 +32,7 @@ Implementar una arquitectura de alta disponibilidad (HA) activo-activo para **WS
                             HTTPS (443) / HTTP (80)
                                        v
                      +-----------------------------------+
-                     |              F5                   |
+                     |     Balanceador F5 / VIP PRD      |
                      |       (api.tu-dominio.com)        |
                      +-----------------------------------+
                             /                     \
@@ -47,8 +49,9 @@ Implementar una arquitectura de alta disponibilidad (HA) activo-activo para **WS
                |                          |                          |
                v                          v                          v
       +-----------------+      +---------------------+      +-----------------+
-      |   NFS / Git     |      |    Base de Datos    |      |   NFS / Git     |
-      | (Artefactos)    |      | WSO2AM_DB           |      | (Artefactos)    |
+      |   NFS / Git     |      | Granja MariaDB      |      |   NFS / Git     |
+      | (Artefactos)    |      | 10.132.0.56         |      | (Artefactos)    |
+      |                 |      | WSO2AM_DB           |      |                 |
       |                 |      | WSO2SHARED_DB       |      |                 |
       +-----------------+      +---------------------+      +-----------------+
 
@@ -72,17 +75,17 @@ Implementar una arquitectura de alta disponibilidad (HA) activo-activo para **WS
      - Distribucion ``wso2am-4.7.0.zip`` descomprimida en ``/opt/wso2/wso2am-4.7.0`` (o actualizacion controlada) con usuario ``wso2``.
      - Estructura ``bin/``, ``repository/`` y ``dbscripts/`` presente en ambos nodos.
    * - **Firewall (firewalld)**
-     - Puertos habilitados entre nodos: ``4000/tcp`` (Hazelcast WKA), ``9611/tcp``, ``9711/tcp`` (Traffic Manager), ``5672/tcp`` (Broker), ``9443/tcp`` y ``8243/tcp``.
-     - Pruebas ``nc -zv`` exitosas entre ambos nodos.
-   * - **Base de Datos**
-     - Instancia PostgreSQL / MariaDB / MySQL / Oracle / MSSQL en PRD con esquemas ``WSO2AM_DB`` y ``WSO2SHARED_DB`` creados en UTF-8.
-     - Conexion JDBC validada desde ambos nodos.
+     - Puertos habilitados entre nodos: ``4000/tcp`` (Hazelcast WKA), ``9611/tcp``, ``9711/tcp`` (Traffic Manager), ``5672/tcp`` (Broker), ``9443/tcp`` y ``8243/tcp`` desde la VIP/red del F5.
+     - Pruebas ``nc -zv`` exitosas entre ambos nodos y hacia ``10.132.0.56:3306``.
+   * - **Base de Datos (Granja MariaDB)**
+     - Granja MariaDB en ``10.132.0.56`` con esquemas ``WSO2AM_DB`` y ``WSO2SHARED_DB`` creados y usuario habilitado para ``10.133.4.187`` y ``10.133.4.188``.
+     - Conexion JDBC validada desde ambos nodos hacia ``10.132.0.56:3306``.
    * - **Almacenamiento**
      - Recurso NFS compartido montado en ``/opt/wso2/wso2am-4.7.0/repository/deployment/server`` (o sincronizacion Git) con permisos para usuario ``wso2``.
      - Archivo creado en Nodo 1 visible inmediatamente en Nodo 2.
-   * - **Certificados y DNS**
-     - Registro DNS ``api.tu-dominio.com`` apuntando al Nginx Reverse Proxy y certificado TLS vigente (``.crt`` y ``.key``).
-     - Resolucion DNS correcta y certificado valido sin alertas de cadena.
+   * - **Certificados, DNS y F5**
+     - Registro DNS ``api.tu-dominio.com`` apuntando a la VIP del F5, certificado TLS vigente y pools/VIPs del F5 configurados hacia ``10.133.4.187`` y ``10.133.4.188``.
+     - Resolucion DNS correcta y alcance desde ambos nodos hacia la VIP del F5.
 
 1.3 Cronograma y Plan de Ejecucion
 ----------------------------------
@@ -102,8 +105,8 @@ Implementar una arquitectura de alta disponibilidad (HA) activo-activo para **WS
      - 25 min
      - N/A
    * - **1**
-     - Bases de Datos Compartidas
-     - Creacion de ``WSO2AM_DB`` y ``WSO2SHARED_DB``, ejecucion de scripts SQL de 4.7.0 y despliegue de driver JDBC.
+     - Bases de Datos en Granja MariaDB
+     - Creacion de ``WSO2AM_DB`` y ``WSO2SHARED_DB`` en ``10.132.0.56``, ejecucion de scripts SQL de 4.7.0 y driver JDBC.
      - 25 min
      - Drop BDs
    * - **2**
@@ -118,17 +121,17 @@ Implementar una arquitectura de alta disponibilidad (HA) activo-activo para **WS
      - Desmontar NFS
    * - **4**
      - Configuracion ``deployment.toml``
-     - Parametrizacion de BDs, clave ``[encryption]``, clustering WKA, Traffic Manager y ``proxyPort = 443`` en ambos nodos.
+     - Parametrizacion de MariaDB (``10.132.0.56``), clave ``[encryption]``, clustering WKA, Traffic Manager y ``proxyPort = 443`` en ambos nodos.
      - 25 min
      - Restaurar ``deployment.toml``
    * - **5**
-     - Servicio ``systemd`` y Nginx
-     - Creacion de unidad ``wso2apim.service`` con ``JAVA_HOME`` JDK 21 y reverse proxy Nginx con SSL y health checks.
-     - 20 min
-     - Revertir conf Nginx
+     - Servicio ``systemd`` y Enlace con F5
+     - Creacion de unidad ``wso2apim.service`` con ``JAVA_HOME`` JDK 21 y verificacion de pools/VIPs en F5.
+     - 15 min
+     - Detener servicio
    * - **6**
      - Arranque y Caso de Exito
-     - Inicio secuencial Nodo 1 -> Nodo 2, verificacion de logs, prueba de APIs y prueba de failover controlado.
+     - Inicio secuencial Nodo 1 -> Nodo 2, verificacion de logs, prueba de APIs y prueba de failover controlado sobre F5.
      - 30 min
      - Restaurar snapshot/tar
 
@@ -139,7 +142,7 @@ En caso de incidencia critica durante la ventana:
 
 1. Detener ``wso2apim.service`` en ``lrkprdappdckposapi01`` y ``lrkprdappdckposapi02``.
 2. Restaurar los respaldos comprimidos generados en la **Fase 0** (``/root/backups_wso2/backup_wso2apim470_prd_*.tar.gz``).
-3. Revertir la configuracion de Nginx al estado previo y recargar (``nginx -t && systemctl reload nginx``).
+3. Coordinar con el equipo de redes/F5 la reversion o deshabilitacion de la VIP/pool de prueba si aplica.
 4. Iniciar el servicio anterior validado y comprobar disponibilidad de portales y Gateway.
 
 =================================================================
@@ -171,7 +174,7 @@ Ejecuta los siguientes pasos en **ambos nodos** (``10.133.4.187`` y ``10.133.4.1
 
    .. code-block:: bash
 
-      dnf install -y java-21-openjdk java-21-openjdk-devel unzip rsync nc
+      dnf install -y java-21-openjdk java-21-openjdk-devel unzip rsync nc mariadb
       java -version
 
 3. **Crear usuario dedicado del sistema y descomprimir WSO2 API Manager 4.7.0:**
@@ -208,7 +211,8 @@ Ejecuta los siguientes pasos en **ambos nodos** (``10.133.4.187`` y ``10.133.4.1
       cat << 'EOF' >> /etc/hosts
       10.133.4.187   lrkprdappdckposapi01
       10.133.4.188   lrkprdappdckposapi02
-      <IP_NGINX_PROXY>   api.tu-dominio.com
+      10.132.0.56    mariadb-prd-cluster
+      <IP_VIP_F5>    api.tu-dominio.com
       EOF
 
       firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="10.133.4.187" port port="4000" protocol="tcp" accept'
@@ -217,8 +221,8 @@ Ejecuta los siguientes pasos en **ambos nodos** (``10.133.4.187`` y ``10.133.4.1
       firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="10.133.4.188" port port="9611-9711" protocol="tcp" accept'
       firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="10.133.4.187" port port="5672" protocol="tcp" accept'
       firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="10.133.4.188" port port="5672" protocol="tcp" accept'
-      firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="<IP_NGINX_PROXY>" port port="9443" protocol="tcp" accept'
-      firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="<IP_NGINX_PROXY>" port port="8243" protocol="tcp" accept'
+      firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="<IP_O_SUBRED_F5>" port port="9443" protocol="tcp" accept'
+      firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="<IP_O_SUBRED_F5>" port port="8243" protocol="tcp" accept'
       firewall-cmd --reload
 
 6. **Verificar sincronizacion horaria con Chrony:**
@@ -228,36 +232,42 @@ Ejecuta los siguientes pasos en **ambos nodos** (``10.133.4.187`` y ``10.133.4.1
       systemctl enable --now chronyd
       chronyc tracking
 
-Fase 1: Preparar Bases de Datos Compartidas y Driver JDBC
---------------------------------------------------------
+Fase 1: Preparar Bases de Datos en Granja MariaDB (``10.132.0.56``)
+--------------------------------------------------------------------
 
-1. **Crear bases de datos y usuario en el motor RDBMS (ejemplo PostgreSQL):**
+1. **Crear bases de datos y usuario de aplicacion en la granja MariaDB (``10.132.0.56``):**
 
    .. code-block:: sql
 
-      CREATE USER wso2_prd_user WITH PASSWORD 'TU_PASSWORD_SEGURO_BD';
-      CREATE DATABASE "WSO2SHARED_DB" OWNER wso2_prd_user ENCODING 'UTF8';
-      CREATE DATABASE "WSO2AM_DB" OWNER wso2_prd_user ENCODING 'UTF8';
-      GRANT ALL PRIVILEGES ON DATABASE "WSO2SHARED_DB" TO wso2_prd_user;
-      GRANT ALL PRIVILEGES ON DATABASE "WSO2AM_DB" TO wso2_prd_user;
+      CREATE DATABASE WSO2SHARED_DB CHARACTER SET latin1 COLLATE latin1_bin;
+      CREATE DATABASE WSO2AM_DB CHARACTER SET latin1 COLLATE latin1_bin;
 
-2. **Inicializar los esquemas SQL de WSO2 APIM 4.7.0 desde el Nodo 1:**
+      CREATE USER 'wso2_prd_user'@'10.133.4.187' IDENTIFIED BY 'TU_PASSWORD_SEGURO_BD';
+      CREATE USER 'wso2_prd_user'@'10.133.4.188' IDENTIFIED BY 'TU_PASSWORD_SEGURO_BD';
 
-   .. code-block:: bash
+      GRANT ALL PRIVILEGES ON WSO2SHARED_DB.* TO 'wso2_prd_user'@'10.133.4.187';
+      GRANT ALL PRIVILEGES ON WSO2AM_DB.* TO 'wso2_prd_user'@'10.133.4.187';
+      GRANT ALL PRIVILEGES ON WSO2SHARED_DB.* TO 'wso2_prd_user'@'10.133.4.188';
+      GRANT ALL PRIVILEGES ON WSO2AM_DB.* TO 'wso2_prd_user'@'10.133.4.188';
 
-      export PGPASSWORD='TU_PASSWORD_SEGURO_BD'
-      psql -h <IP_SERVIDOR_BD> -U wso2_prd_user -d WSO2SHARED_DB \
-        -f /opt/wso2/wso2am-4.7.0/dbscripts/postgresql.sql
+      FLUSH PRIVILEGES;
 
-      psql -h <IP_SERVIDOR_BD> -U wso2_prd_user -d WSO2AM_DB \
-        -f /opt/wso2/wso2am-4.7.0/dbscripts/apimgt/postgresql.sql
-
-3. **Copiar el driver JDBC en ambos nodos:**
+2. **Inicializar los esquemas SQL de WSO2 APIM 4.7.0 contra ``10.132.0.56`` desde el Nodo 1:**
 
    .. code-block:: bash
 
-      cp /tmp/postgresql-42.7.3.jar /opt/wso2/wso2am-4.7.0/repository/components/lib/
-      chown wso2:wso2 /opt/wso2/wso2am-4.7.0/repository/components/lib/postgresql-42.7.3.jar
+      mysql -h 10.132.0.56 -u wso2_prd_user -p WSO2SHARED_DB \
+        < /opt/wso2/wso2am-4.7.0/dbscripts/mysql.sql
+
+      mysql -h 10.132.0.56 -u wso2_prd_user -p WSO2AM_DB \
+        < /opt/wso2/wso2am-4.7.0/dbscripts/apimgt/mysql.sql
+
+3. **Copiar el driver JDBC (MariaDB / MySQL connector) en ambos nodos:**
+
+   .. code-block:: bash
+
+      cp /tmp/mariadb-java-client-3.3.2.jar /opt/wso2/wso2am-4.7.0/repository/components/lib/
+      chown wso2:wso2 /opt/wso2/wso2am-4.7.0/repository/components/lib/mariadb-java-client-3.3.2.jar
 
 Fase 2: Homologar Keystores y Truststores TLS
 ---------------------------------------------
@@ -328,7 +338,7 @@ Para que los artefactos desplegados en un nodo esten disponibles en el otro sin 
 Fase 4: Configurar ``deployment.toml`` en Ambos Nodos
 ----------------------------------------------------
 
-Edita ``/opt/wso2/wso2am-4.7.0/repository/conf/deployment.toml`` en ambos nodos. Ajusta ``node_ip`` y ``local_member_host`` segun corresponda (``10.133.4.187`` en Nodo 1 y ``10.133.4.188`` en Nodo 2) y asegura que la clave en ``[encryption]`` sea identica en ambos servidores.
+Edita ``/opt/wso2/wso2am-4.7.0/repository/conf/deployment.toml`` en ambos nodos apuntando a la granja MariaDB ``10.132.0.56``. Ajusta ``node_ip`` y ``local_member_host`` segun el nodo (``10.133.4.187`` en Nodo 1 y ``10.133.4.188`` en Nodo 2) y asegura que la clave en ``[encryption]`` sea identica en ambos servidores.
 
 .. code-block:: toml
 
@@ -346,10 +356,10 @@ Edita ``/opt/wso2/wso2am-4.7.0/repository/conf/deployment.toml`` en ambos nodos.
    [encryption]
    key = "REEMPLAZAR_POR_CLAVE_SEGURA_COMPARTIDA_IDENTICA_EN_AMBOS_NODOS"
 
-   # --- Base de Datos Compartida (Registry y Usuarios) ---
+   # --- Base de Datos Compartida (Registry y Usuarios) en Granja MariaDB ---
    [database.shared_db]
-   type = "postgresql"
-   url = "jdbc:postgresql://<IP_SERVIDOR_BD>:5432/WSO2SHARED_DB"
+   type = "mariadb"
+   url = "jdbc:mariadb://10.132.0.56:3306/WSO2SHARED_DB?useSSL=false&allowPublicKeyRetrieval=true"
    username = "wso2_prd_user"
    password = "TU_PASSWORD_SEGURO_BD"
 
@@ -359,10 +369,10 @@ Edita ``/opt/wso2/wso2am-4.7.0/repository/conf/deployment.toml`` en ambos nodos.
    testOnBorrow = true
    validationQuery = "SELECT 1"
 
-   # --- Base de Datos API Manager ---
+   # --- Base de Datos API Manager en Granja MariaDB ---
    [database.apim_db]
-   type = "postgresql"
-   url = "jdbc:postgresql://<IP_SERVIDOR_BD>:5432/WSO2AM_DB"
+   type = "mariadb"
+   url = "jdbc:mariadb://10.132.0.56:3306/WSO2AM_DB?useSSL=false&allowPublicKeyRetrieval=true"
    username = "wso2_prd_user"
    password = "TU_PASSWORD_SEGURO_BD"
 
@@ -385,7 +395,7 @@ Edita ``/opt/wso2/wso2am-4.7.0/repository/conf/deployment.toml`` en ambos nodos.
    type = "JKS"
    password = "wso2carbon"
 
-   # --- Puertos Proxy para Reverse Proxy Nginx (Terminacion TLS en 443) ---
+   # --- Puertos Proxy para Balanceador F5 (Puerto externo 443) ---
    [transport.https.properties]
    proxyPort = 443
 
@@ -435,8 +445,8 @@ Edita ``/opt/wso2/wso2am-4.7.0/repository/conf/deployment.toml`` en ambos nodos.
    traffic_manager_auth_urls = ["ssl://10.133.4.187:9711", "ssl://10.133.4.188:9711"]
    type = "loadbalance"
 
-Fase 5: Configurar Servicio ``systemd`` y Reverse Proxy Nginx
-------------------------------------------------------------
+Fase 5: Configurar Servicio ``systemd`` y Verificacion de Alcance con F5
+------------------------------------------------------------------------
 
 1. **Crear unidad ``systemd`` con JDK 21 en ambos nodos Rocky Linux 9:**
 
@@ -468,56 +478,12 @@ Fase 5: Configurar Servicio ``systemd`` y Reverse Proxy Nginx
       systemctl daemon-reload
       systemctl enable wso2apim
 
-2. **Configurar Nginx Reverse Proxy (en el servidor balanceador/proxy):**
-
-   .. code-block:: nginx
-
-      upstream wso2_portals_9443 {
-          ip_hash;
-          server 10.133.4.187:9443 max_fails=3 fail_timeout=30s;
-          server 10.133.4.188:9443 max_fails=3 fail_timeout=30s;
-      }
-
-      upstream wso2_gateway_8243 {
-          least_conn;
-          server 10.133.4.187:8243 max_fails=3 fail_timeout=15s;
-          server 10.133.4.188:8243 max_fails=3 fail_timeout=15s;
-      }
-
-      server {
-          listen 443 ssl http2;
-          server_name api.tu-dominio.com;
-
-          ssl_certificate     /etc/pki/tls/certs/api.tu-dominio.com.crt;
-          ssl_certificate_key /etc/pki/tls/private/api.tu-dominio.com.key;
-          ssl_protocols       TLSv1.2 TLSv1.3;
-
-          proxy_set_header Host              $host;
-          proxy_set_header X-Real-IP         $remote_addr;
-          proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
-          proxy_set_header X-Forwarded-Proto https;
-
-          # Portales de Administracion, Publisher, DevPortal y OAuth2
-          location ~ ^/(publisher|devportal|admin|carbon|oauth2|oidc|api/am|services/Version) {
-              proxy_pass https://wso2_portals_9443;
-              proxy_ssl_verify off;
-              proxy_read_timeout 180s;
-          }
-
-          # Trafico de APIs en Runtime (Gateway)
-          location / {
-              proxy_pass https://wso2_gateway_8243;
-              proxy_ssl_verify off;
-              proxy_read_timeout 120s;
-          }
-      }
-
-   Validar y recargar Nginx:
+2. **Validar conectividad de red hacia la granja MariaDB (``10.132.0.56:3306``) y alcance desde ambos nodos:**
 
    .. code-block:: bash
 
-      setsebool -P httpd_can_network_connect 1
-      nginx -t && systemctl reload nginx
+      nc -zv 10.132.0.56 3306
+      getent hosts api.tu-dominio.com
 
 =================================================================
 Parte 3: Caso de Exito — Arranque y Validacion de Aceptacion
@@ -535,7 +501,7 @@ Para dar por exitoso el despliegue de **WSO2 API Manager 4.7.0** en Produccion, 
       systemctl start wso2apim
       tail -f /opt/wso2/wso2am-4.7.0/repository/logs/wso2carbon.log
 
-   * **Evidencia esperada:** Mensaje ``WSO2 Carbon started in X sec`` sobre JDK 21 sin errores ``SQLException`` ni ``BindException``.
+   * **Evidencia esperada:** Mensaje ``WSO2 Carbon started in X sec`` sobre JDK 21 conectado a ``10.132.0.56:3306`` sin errores ``SQLException`` ni ``BindException``.
 
 2. **Iniciar Nodo 2 (``lrkprdappdckposapi02``):**
 
@@ -565,22 +531,22 @@ Para dar por exitoso el despliegue de **WSO2 API Manager 4.7.0** en Produccion, 
      - Procedimiento de Ejecucion
      - Resultado Esperado (OK)
    * - **TC-01**
-     - Acceso a Portales via Balanceador
+     - Acceso a Portales via F5
      - Ingresar a ``https://api.tu-dominio.com/publisher`` y ``https://api.tu-dominio.com/devportal`` con usuario administrativo.
      - Login OAuth2 exitoso sin redireccion al puerto ``:9443`` en la URL.
    * - **TC-02**
      - Publicacion y Sincronizacion de API
-     - Crear y publicar una API REST de prueba (``HealthCheckAPI v1.0.0``) en Publisher; verificar sincronizacion entre nodos.
-     - La API queda publicada y visible en DevPortal y disponible en ambos nodos del cluster.
+     - Crear y publicar una API REST de prueba (``HealthCheckAPI v1.0.0``) en Publisher; verificar sincronizacion entre nodos y persistencia en MariaDB (``10.132.0.56``).
+     - La API queda publicada, visible en DevPortal y disponible en ambos nodos del cluster.
    * - **TC-03**
-     - Balanceo Activo-Activo del Gateway
+     - Balanceo Activo-Activo del Gateway en F5
      - Generar un token de acceso y ejecutar 20 peticiones ``curl -k https://api.tu-dominio.com/healthcheck/1.0.0``; inspeccionar logs de acceso en Nodo 1 y Nodo 2.
      - Ambas instancias atienden peticiones con codigo HTTP ``200``.
    * - **TC-04**
      - Continuidad ante Caida de Nodo 1 (Failover)
      - Ejecutar ``systemctl stop wso2apim`` en ``lrkprdappdckposapi01`` mientras se envian peticiones continuas al endpoint del Gateway.
-     - Nginx redirige el 100% del trafico a ``lrkprdappdckposapi02`` sin perdida de peticiones ni errores de autenticacion de token.
+     - El F5 redirige el 100% del trafico a ``lrkprdappdckposapi02`` sin perdida de peticiones ni errores de autenticacion de token.
    * - **TC-05**
      - Reincorporacion del Nodo 1
      - Ejecutar ``systemctl start wso2apim`` en ``lrkprdappdckposapi01`` y verificar ``wso2carbon.log``.
-     - El Nodo 1 se reincorpora al cluster WKA (``Members [2]``) y vuelve a recibir trafico balanceado desde Nginx.
+     - El Nodo 1 se reincorpora al cluster WKA (``Members [2]``) y el F5 vuelve a distribuir trafico hacia ambos nodos.
