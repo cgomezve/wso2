@@ -1,4 +1,4 @@
-================================================================================
+
 Manual de Implementación: Clúster Activo-Activo WSO2 API Manager 4.7.0
 Rocky Linux 9 + JDK 21 + MariaDB (Granja 10.132.0.56) + Balanceador F5
 ================================================================================
