@@ -1,4 +1,3 @@
-
 Manual de Implementación: Clúster Activo-Activo WSO2 API Manager 4.7.0
 Rocky Linux 9 + JDK 21 + MariaDB (Granja 10.132.0.56) + Balanceador F5
 ================================================================================
@@ -28,7 +27,7 @@ Rocky Linux 9 + JDK 21 + MariaDB (Granja 10.132.0.56) + Balanceador F5
    oficial de WSO2 o a un socio certificado y someter la configuración a revisión.
 
    **Nota sobre MariaDB**: La matriz oficial de compatibilidad de WSO2 APIM 4.7.0
-   no lista MariaDB explícitamente entre las bases de datos probadas. MariaDB es
+   no lista MariaDB explícitamente entre las bases de datos probadas [citation:21]. MariaDB es
    altamente compatible con MySQL y funciona con el driver MariaDB Connector/J,
    pero **queda fuera del alcance de las pruebas oficiales**. Se recomienda
    validar exhaustivamente en un entorno de pruebas antes de producción.
@@ -71,8 +70,87 @@ Rocky Linux 9 + JDK 21 + MariaDB (Granja 10.132.0.56) + Balanceador F5
 - Acceso root/sudo a ambos nodos Rocky Linux 9.
 - Conectividad de red verificada entre ambos nodos y hacia ``10.132.0.56:3306``.
 
+**Consultas obligatorias al equipo de DBA (MariaDB 10.132.0.56)**:
+
+.. list-table:: Puntos a Confirmar con el Equipo de Base de Datos
+   :header-rows: 1
+   :widths: 30 70
+
+   * - Tema
+     - Acción requerida
+   * - Política SSL
+     - Confirmar si la cadena JDBC debe usar ``useSSL=true`` (con
+       ``trustServerCertificate=true`` o certificado importado al truststore)
+       o ``useSSL=false``. **No asumir ``useSSL=false`` sin validación**.
+   * - Codificación de caracteres
+     - Confirmar si los esquemas ``WSO2AM_DB`` y ``WSO2SHARED_DB`` usan
+       ``latin1_bin`` (recomendado para WSO2) o ``utf8mb4``. La codificación
+       debe ser **consistente** entre ambas bases de datos y el parámetro
+       ``characterEncoding`` en la URL JDBC si aplica.
+   * - Versión exacta de MariaDB
+     - Registrar la versión del servidor (``SELECT VERSION();``) para
+       referencia y troubleshooting.
+   * - Driver JDBC recomendado
+     - Confirmar la versión de MariaDB Connector/J que el equipo de DBA
+       considera estable para producción.
+
 ================================================================================
-1. Descarga e Instalación de JDK 21
+1. Ajustes del Sistema Operativo (EJECUTAR ANTES DEL SERVICIO)
+================================================================================
+
+.. important::
+
+   **Ejecutar esta fase completa antes de crear o habilitar el servicio
+   ``wso2apim.service``.** Los límites de ``nofile`` y ``nproc`` deben estar
+   vigentes para el usuario ``wso2`` antes de que systemd inicie el proceso
+   Java. Si se configuran después, el proceso heredará los valores
+   predeterminados del sistema y las restricciones no aplicarán.
+
+**Realizar en ambos nodos:**
+
+1.1 Límites de Descriptores de Archivos
+----------------------------------------
+
+.. code-block:: bash
+
+   sudo tee /etc/security/limits.d/99-wso2.conf > /dev/null << 'EOF'
+   wso2 soft nofile 65535
+   wso2 hard nofile 65535
+   wso2 soft nproc 32768
+   wso2 hard nproc 32768
+   EOF
+
+Verificar que el usuario ``wso2`` puede aplicar los límites (requiere sesión
+nueva o ``su - wso2 -s /bin/bash -c "ulimit -n"``).
+
+1.2 Parámetros del Kernel
+--------------------------
+
+.. code-block:: bash
+
+   sudo tee /etc/sysctl.d/99-wso2.conf > /dev/null << 'EOF'
+   vm.max_map_count = 262144
+   net.core.somaxconn = 4096
+   EOF
+   sudo sysctl --system
+
+Verificar:
+
+.. code-block:: bash
+
+   sysctl vm.max_map_count net.core.somaxconn
+
+1.3 Sincronización Horaria
+---------------------------
+
+.. code-block:: bash
+
+   sudo systemctl enable --now chronyd
+   chronyc tracking
+   # Verificar que el offset sea bajo (< 10 ms idealmente)
+
+================================================================================
+2. Descarga e Instalación de JDK 21
 ================================================================================
 
 **Realizar en ambos nodos.**
@@ -103,7 +181,7 @@ Verificar:
    echo $JAVA_HOME
 
 ================================================================================
-2. Descarga e Instalación de WSO2 API Manager 4.7.0
+3. Descarga e Instalación de WSO2 API Manager 4.7.0
 ================================================================================
 
 **Realizar en ambos nodos.**
@@ -127,16 +205,18 @@ Descargar ``wso2am-4.7.0.zip`` desde la página oficial de productos de WSO2.
    de las fases siguientes.
 
 ================================================================================
-3. Creación de Bases de Datos MariaDB y Driver JDBC
+4. Creación de Bases de Datos MariaDB y Driver JDBC
 ================================================================================
 
-3.1 Creación de Esquemas y Usuario
+4.1 Creación de Esquemas y Usuario
 -----------------------------------
 
-**Ejecutar en el servidor de base de datos** ``10.132.0.56`` (o solicitar al DBA):
+**Ejecutar en el servidor de base de datos** ``10.132.0.56`` (o solicitar al DBA).
+Ajustar la codificación según lo confirmado con el equipo de DBA (ver sección 0.2).
 
 .. code-block:: sql
 
+   -- Verificar codificación con DBA antes de ejecutar
    CREATE DATABASE WSO2AM_DB CHARACTER SET latin1 COLLATE latin1_bin;
    CREATE DATABASE WSO2SHARED_DB CHARACTER SET latin1 COLLATE latin1_bin;
 
@@ -150,7 +230,7 @@ Descargar ``wso2am-4.7.0.zip`` desde la página oficial de productos de WSO2.
 
    FLUSH PRIVILEGES;
 
-3.2 Inicialización de Esquemas
+4.2 Inicialización de Esquemas
 -------------------------------
 
 **Ejecutar en el Nodo 1** usando los scripts SQL incluidos con WSO2:
@@ -165,7 +245,7 @@ Descargar ``wso2am-4.7.0.zip`` desde la página oficial de productos de WSO2.
    mysql -h 10.132.0.56 -u wso2_prd_user -p WSO2AM_DB \
      < /opt/wso2/wso2am-4.7.0/dbscripts/apimgt/mysql.sql
 
-3.3 Colocación del Driver JDBC
+4.3 Colocación del Driver JDBC
 -------------------------------
 
 Descargar ``mariadb-java-client-3.x.x.jar`` y colocarlo en **ambos nodos**:
@@ -178,13 +258,13 @@ Descargar ``mariadb-java-client-3.x.x.jar`` y colocarlo en **ambos nodos**:
      /opt/wso2/wso2am-4.7.0/repository/components/lib/mariadb-java-client-3.x.x.jar
 
 ================================================================================
-4. Configuración de Keystore y Truststore
+5. Configuración de Keystore y Truststore
 ================================================================================
 
 **Punto clave de un clúster activo-activo: ambos nodos deben usar exactamente
-el mismo keystore y truststore.**
+el mismo keystore y truststore** [citation:3][citation:9].
 
-4.1 Generación en el Nodo 1
+5.1 Generación en el Nodo 1
 ----------------------------
 
 .. code-block:: bash
@@ -215,7 +295,7 @@ el mismo keystore y truststore.**
 
    chown wso2:wso2 wso2carbon.jks wso2carbon.p12 client-truststore.jks
 
-4.2 Replicación hacia el Nodo 2
+5.2 Replicación hacia el Nodo 2
 --------------------------------
 
 .. code-block:: bash
@@ -229,11 +309,11 @@ el mismo keystore y truststore.**
      "chown -R wso2:wso2 /opt/wso2/wso2am-4.7.0/repository/resources/security/"
 
 ================================================================================
-5. Montaje del Sistema de Archivos Compartido NFS
+6. Montaje del Sistema de Archivos Compartido NFS
 ================================================================================
 
 **Este es el mecanismo principal recomendado oficialmente para la sincronización
-de artefactos en despliegues activo-activo All-in-One.**
+de artefactos en despliegues activo-activo All-in-One** [citation:3][citation:9].
 
 **Realizar en ambos nodos:**
 
@@ -259,7 +339,7 @@ de artefactos en despliegues activo-activo All-in-One.**
    sudo chown -R wso2:wso2 /opt/wso2/wso2am-4.7.0/repository/deployment/server
 
 ================================================================================
-6. Configuración de deployment.toml
+7. Configuración Completa de deployment.toml
 ================================================================================
 
 **Editar en ambos nodos** el archivo
@@ -267,7 +347,7 @@ de artefactos en despliegues activo-activo All-in-One.**
 
 Ajustar ``node_ip`` según el nodo (``10.133.4.187`` en Nodo 1,
 ``10.133.4.188`` en Nodo 2) y asegurar que la clave en ``[encryption]`` sea
-**idéntica en ambos servidores**.
+**idéntica en ambos servidores** [citation:9].
 
 .. code-block:: toml
 
@@ -278,11 +358,16 @@ Ajustar ``node_ip`` según el nodo (``10.133.4.187`` en Nodo 1,
    [transport.https.properties]
    proxyPort = 443                       # Evita que la URL generada incluya :9443
 
+   [super_admin]
+   username = "admin"
+   password = "TU_PASSWORD_ADMIN_PRD"
+   create_admin_account = true
+
    # Clave de cifrado: ambos nodos deben ser idénticos, 64 caracteres hex
    [encryption]
    key = "GENERAR_UNA_CLAVE_HEX_DE_64_CARACTERES_Y_USARLA_EN_AMBOS_NODOS"
 
-   # Base de datos APIM
+   # Base de datos APIM — Ajustar URL según política SSL del DBA
    [database.apim_db]
    type = "mariadb"
    url = "jdbc:mariadb://10.132.0.56:3306/WSO2AM_DB?useSSL=false&allowPublicKeyRetrieval=true"
@@ -321,19 +406,52 @@ Ajustar ``node_ip`` según el nodo (``10.133.4.187`` en Nodo 1,
    type = "JKS"
    password = "wso2carbon"
 
+   # --- Entorno Gateway (Publisher → Gateways del clúster) ---
+   [[apim.gateway.environment]]
+   name = "Production and Sandbox"
+   type = "hybrid"
+   display_in_api_console = true
+   description = "Gateway Cluster Produccion 4.7.0"
+   show_as_token_endpoint_url = true
+   service_url = "https://localhost:${mgt.transport.https.port}/services/"
+   username = "${admin.username}"
+   password = "${admin.password}"
+   ws_endpoint = "ws://api.tu-dominio.com:9099"
+   wss_endpoint = "wss://api.tu-dominio.com:8099"
+   http_endpoint = "http://api.tu-dominio.com:80"
+   https_endpoint = "https://api.tu-dominio.com:443"
+
+   # --- Throttling Distribuido (Traffic Manager en ambos nodos) ---
+   [apim.throttling]
+   enable_unlimited_tier = true
+   enable_header_based_throttling = false
+   enable_jwt_claim_based_throttling = false
+   enable_query_param_based_throttling = false
+
+   [[apim.throttling.url_group]]
+   traffic_manager_urls = ["tcp://10.133.4.187:9611", "tcp://10.133.4.188:9611"]
+   traffic_manager_auth_urls = ["ssl://10.133.4.187:9711", "ssl://10.133.4.188:9711"]
+   type = "loadbalance"
+
 .. note::
 
    **Sobre clustering Hazelcast**: La documentación oficial de despliegue
    activo-activo All-in-One de WSO2 se basa principalmente en **base de datos
    compartida + sistema de archivos compartido (NFS)**. El clúster de Hazelcast
    (``[clustering]``) **no es un requisito obligatorio** para este escenario.
-   Si su equipo tiene requisitos específicos de rendimiento de caché, consulte
-   por separado la documentación de clustering de 4.7.0 para agregarlo, pero no
-   lo incluya a ciegas.
+   La configuración de ``[apim.throttling]`` con ``url_group`` sí es necesaria
+   para que el Gateway consulte al Traffic Manager local de cada nodo [citation:14][citation:22].
 
 ================================================================================
-7. Configuración del Servicio systemd
+8. Configuración del Servicio systemd (ÚLTIMO PASO ANTES DE ARRANCAR)
 ================================================================================
+
+.. important::
+
+   **Crear el servicio systemd solamente después de haber completado las
+   secciones 1 (límites del SO), 6 (NFS) y 7 (deployment.toml).** De esta
+   manera los límites de ``nofile`` y ``nproc`` estarán vigentes cuando
+   systemd lance el proceso Java.
 
 **Realizar en ambos nodos:**
 
@@ -350,6 +468,7 @@ Ajustar ``node_ip`` según el nodo (``10.133.4.187`` en Nodo 1,
    User=wso2
    Group=wso2
    Environment="JAVA_HOME=/usr/lib/jvm/temurin-21-jdk"
+   Environment="JVM_MEM_OPTS=-Xms4g -Xmx4g"
    ExecStart=/opt/wso2/wso2am-4.7.0/bin/api-manager.sh start
    ExecStop=/opt/wso2/wso2am-4.7.0/bin/api-manager.sh stop
    PIDFile=/opt/wso2/wso2am-4.7.0/wso2carbon.pid
@@ -364,57 +483,83 @@ Ajustar ``node_ip`` según el nodo (``10.133.4.187`` en Nodo 1,
    sudo systemctl daemon-reload
    sudo systemctl enable wso2apim
 
+**Dimensionamiento JVM**: ``-Xms4g -Xmx4g`` es un punto de partida razonable
+para un nodo All-in-One con carga moderada. Ajustar según la memoria RAM
+disponible y el perfil de carga real. Mantener ``Xms=Xmx`` para evitar pausas
+por redimensionamiento del heap.
+
 ================================================================================
-8. Ajustes del Sistema Operativo y Firewall
+9. Firewall (Reglas Simétricas)
 ================================================================================
 
-8.1 Ajustes del Kernel (ambos nodos)
--------------------------------------
+**Las reglas deben ser simétricas**: cada nodo debe permitir el tráfico
+proveniente del otro nodo y de la subred del F5.
+
+9.1 Puertos requeridos entre nodos (10.133.4.187 ↔ 10.133.4.188)
+-----------------------------------------------------------------
+
+.. list-table:: Puertos de Comunicación Interna del Clúster
+   :header-rows: 1
+   :widths: 20 30 50
+
+   * - Puerto
+     - Protocolo
+     - Propósito
+   * - 4000
+     - TCP
+     - Hazelcast / comunicación de clúster
+   * - 9611
+     - TCP
+     - Traffic Manager (binary)
+   * - 9711
+     - TCP
+     - Traffic Manager (SSL)
+   * - 5672
+     - TCP
+     - Broker / mensajería interna
+
+9.2 Puertos desde la subred del F5
+-----------------------------------
+
+.. list-table:: Puertos de Acceso desde F5
+   :header-rows: 1
+   :widths: 20 30 50
+
+   * - Puerto
+     - Protocolo
+     - Propósito
+   * - 9443
+     - TCP
+     - Portales (Publisher, DevPortal, Admin)
+   * - 8243
+     - TCP
+     - Gateway HTTPS (Pass-through)
+
+9.3 Ejemplo de aplicación (Nodo 1)
+------------------------------------
 
 .. code-block:: bash
 
-   sudo tee /etc/sysctl.d/99-wso2.conf > /dev/null << 'EOF'
-   vm.max_map_count = 262144
-   net.core.somaxconn = 4096
-   EOF
-   sudo sysctl --system
-
-8.2 Límites de Descriptores de Archivos
-----------------------------------------
-
-.. code-block:: bash
-
-   sudo tee /etc/security/limits.d/99-wso2.conf > /dev/null << 'EOF'
-   wso2 soft nofile 65535
-   wso2 hard nofile 65535
-   wso2 soft nproc 32768
-   wso2 hard nproc 32768
-   EOF
-
-8.3 Firewall (firewalld)
--------------------------
-
-Abrir los puertos necesarios para la comunicación del clúster entre los dos
-nodos (**4000**, **9611**, **9711**, **5672**), así como los puertos **9443**
-y **8243** para el acceso desde F5. La configuración detallada del F5 queda
-fuera del alcance de este manual.
-
-.. code-block:: bash
-
-   # Ejemplo en el Nodo 1
+   # Permitir tráfico desde el Nodo 2
    sudo firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="10.133.4.188" port port="4000" protocol="tcp" accept'
    sudo firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="10.133.4.188" port port="9611-9711" protocol="tcp" accept'
    sudo firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="10.133.4.188" port port="5672" protocol="tcp" accept'
+
+   # Permitir tráfico desde subred del F5
    sudo firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="<SUBRED_F5>" port port="9443" protocol="tcp" accept'
    sudo firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="<SUBRED_F5>" port port="8243" protocol="tcp" accept'
+
    sudo firewall-cmd --reload
 
+**Repetir en el Nodo 2 invirtiendo la IP de origen** (``10.133.4.187`` en
+lugar de ``10.133.4.188`` para las reglas entre nodos).
+
 ================================================================================
-9. Inicio y Verificación
+10. Inicio y Verificación
 ================================================================================
 
-9.1 Inicio Secuencial
-----------------------
+10.1 Inicio Secuencial
+-----------------------
 
 **Iniciar primero el Nodo 1:**
 
@@ -433,8 +578,8 @@ hay errores de conexión a la base de datos ni excepciones de enlace de puertos.
    sudo systemctl start wso2apim
    sudo tail -f /opt/wso2/wso2am-4.7.0/repository/logs/wso2carbon.log
 
-9.2 Matriz de Pruebas de Aceptación
-------------------------------------
+10.2 Matriz de Pruebas de Aceptación
+-------------------------------------
 
 .. list-table:: Acta de Validación Técnica
    :header-rows: 1
@@ -470,7 +615,49 @@ hay errores de conexión a la base de datos ni excepciones de enlace de puertos.
      - Nodo 1 se reincorpora y F5 vuelve a distribuir tráfico.
 
 ================================================================================
-10. Resumen de Riesgos y Recomendaciones
+11. Plan de Rollback (Contingencia)
+================================================================================
+
+**Si se detecta una incidencia crítica durante la ventana de implementación,
+ejecutar en este orden:**
+
+1. **Detener servicios en ambos nodos:**
+
+   .. code-block:: bash
+
+      sudo systemctl stop wso2apim
+
+2. **Restaurar respaldos de configuración y keystores** (generados antes de
+   la ventana, según Fase 0 del manual original):
+
+   .. code-block:: bash
+
+      # En cada nodo, restaurar desde el tar de respaldo
+      sudo tar -xzvf /root/backups_wso2/backup_wso2apim470_prd_$(hostname)_*.tar.gz \
+        -C /
+
+3. **Revertir cambios en la base de datos** (solo si es necesario y
+   coordinado con el DBA):
+
+   - Si los esquemas fueron creados en esta ventana y no contienen datos:
+     ``DROP DATABASE WSO2AM_DB; DROP DATABASE WSO2SHARED_DB;``
+   - Si contienen datos: restaurar desde el respaldo lógico del DBA.
+
+4. **Desmontar NFS** (si se montó en esta ventana):
+
+   .. code-block:: bash
+
+      sudo umount /opt/wso2/wso2am-4.7.0/repository/deployment/server
+      # Eliminar la línea correspondiente de /etc/fstab
+
+5. **Coordinar con el equipo de F5** la deshabilitación o reversión del pool
+   de producción si el servicio no queda operativo.
+
+6. **Reiniciar el servicio anterior validado** (si existe una versión previa)
+   y confirmar disponibilidad de portales y Gateway.
+
+================================================================================
+12. Resumen de Riesgos y Recomendaciones
 ================================================================================
 
 .. list-table:: Matriz de Compatibilidad y Riesgos
@@ -488,8 +675,8 @@ hay errores de conexión a la base de datos ni excepciones de enlace de puertos.
      - Básicamente compatible con RHEL 9.6 probado oficialmente.
    * - MariaDB
      - **Riesgo**
-     - **No está en la lista de pruebas oficiales.** Validar exhaustivamente
-       sentencias SQL y driver antes de producción.
+     - **No está en la lista de pruebas oficiales** [citation:21]. Validar SSL, codificación
+       y driver con el DBA antes de producción.
    * - NFS compartido
      - Recomendado
      - Método de sincronización recomendado oficialmente; depende de la
@@ -498,11 +685,18 @@ hay errores de conexión a la base de datos ni excepciones de enlace de puertos.
      - Opcional
      - No habilitado por defecto en esta guía; el estándar activo-activo
        oficial se basa en BD + NFS compartidos.
+   * - Configuración de sistema (limits/sysctl)
+     - **Obligatorio antes del servicio**
+     - Si se omite, el proceso Java no heredará los límites correctos.
+   * - Reglas de firewall simétricas
+     - **Obligatorio**
+     - Verificar que cada nodo permita el tráfico del otro y de la subred F5.
 
 .. note::
 
    **Vía para certificación oficial**: Tener una suscripción válida de WSO2 y
-   enviar la configuración del entorno (especialmente la elección de MariaDB y
-   la arquitectura NFS) al soporte de WSO2 para revisión; o encargar a un socio
-   certificado de WSO2 una auditoría de implementación. Los pasos anteriores
-   pueden servir como base para dicha auditoría.
+   enviar la configuración del entorno (especialmente la elección de MariaDB,
+   la política SSL de la cadena JDBC, y la arquitectura NFS) al soporte de
+   WSO2 para revisión; o encargar a un socio certificado de WSO2 una auditoría
+   de implementación. Los pasos anteriores pueden servir como base para dicha
+   auditoría.
